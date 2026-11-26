@@ -1263,14 +1263,27 @@ function rr(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// 折行：超出宽度时优先断在标点后面，避免下一行只剩一两个字（孤字）
 function wrap(ctx, text, maxW) {
+  const PUNCT = '。！？；：，、…';
   const out = [];
   let line = '';
   for (const ch of text) {
-    if (ctx.measureText(line + ch).width > maxW && line) {
+    if (!line || ctx.measureText(line + ch).width <= maxW) {
+      line += ch;
+      continue;
+    }
+    let cut = -1;
+    for (let i = line.length - 1; i >= Math.max(0, line.length - 8); i--) {
+      if (PUNCT.includes(line[i])) { cut = i + 1; break; }
+    }
+    if (cut > 0 && cut < line.length) {
+      out.push(line.slice(0, cut));
+      line = line.slice(cut) + ch;
+    } else {
       out.push(line);
       line = ch;
-    } else line += ch;
+    }
   }
   if (line) out.push(line);
   return out;
@@ -2686,6 +2699,9 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 window.__game = game;
+window.__ui = ui;
+window.__tickAmbient = tickAmbient; // 仅供 test/capture*.html 这类实机捕捉页使用
+window.__api = { update, draw, ui, tickAmbient };
 
 // ------------------------------------------------------------
 //  调试参数（截图 / 自测用）
