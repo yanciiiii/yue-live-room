@@ -78,9 +78,10 @@ const CONFIG = {
   popupH: 66,
   interferenceEvery: [10, 15],
   interferenceWindow: 3.2,
-  // 「抢麦」不再是按一下就好：要在倒计时归零前连点这么多下把进度条清满。
-  // 每天会覆盖这个值（DAYS[i].mash），时间倒计时和清除进度是两回事。
-  mashNeed: 10,
+  // 「抢麦」的清除进度：点一下涨一截，同时每秒自己往下掉。
+  // 两条独立：时间只减不增，进度有涨有落。
+  mashGain: [0.15, 0.25],   // 点一下涨多少（随机）
+  mashDecay: [0.18, 0.20],  // 每秒自己掉多少（每次抢麦随机一个斜率）
   missPenalty: { attention: 26, mental: 1 },   // 漏接主要扣关注
   wrongPenalty: { attention: 18, mental: 0 },  // 选错也只扣关注
   interferencePenalty: { attention: 70, mental: 22 },
@@ -104,15 +105,15 @@ const DAYS = [
   // 三天难度曲线：弹幕越来越密，他抢按钮和抢麦也越来越勤
   // goal 是「到这一天结束时累计要到多少」
   {
-    day: 1, duration: 75, goal: 1500, mash: 9,
+    day: 1, duration: 75, goal: 1500,
     lineGap: 1.75, corrupt: [1.9, 2.7], interference: [14, 19],
   },
   {
-    day: 2, duration: 85, goal: 2500, mash: 11,
+    day: 2, duration: 85, goal: 2500,
     lineGap: 1.25, corrupt: [1.2, 2.0], interference: [10, 14],
   },
   {
-    day: 3, duration: 95, goal: 3400, mash: 13,
+    day: 3, duration: 95, goal: 3400,
     lineGap: 1.15, corrupt: [0.9, 1.5], interference: [7, 11],
   },
 ];
@@ -888,22 +889,16 @@ function removePopup(g, popup) {
   g.spawnTimer = Math.max(g.spawnTimer, 0.3);
 }
 
-// 这一天要连点多少下才能把他压回去
-function mashNeed(g) {
-  const cfg = DAYS[g.day - 1];
-  return (cfg && cfg.mash) || CONFIG.mashNeed;
-}
-
-// 抢麦面板的状态：时间倒计时（timeLeft）和清除进度（clicks / need）各算各的
+// 抢麦面板的状态：时间倒计时（timeLeft）和清除进度（prog 0~1）各算各的
 function makeInterference(g, opts = {}) {
   const timeLeft = opts.timeLeft ?? CONFIG.interferenceWindow;
   return {
     text: opts.text ?? pick(INTERFERENCE),
     timeLeft,
     maxTime: opts.maxTime ?? timeLeft,
-    clicks: opts.clicks ?? 0,
-    need: opts.need ?? mashNeed(g),
-    pulse: 0,        // 每点一下闪一下，纯表现
+    prog: opts.prog ?? 0,          // 0~1，点一下涨、每秒自己掉
+    decay: opts.decay ?? rand(...CONFIG.mashDecay),
+    pulse: 0,                       // 每点一下闪一下，纯表现
     critical: opts.critical ?? g.mental <= CONFIG.interferencePenalty.mental,
   };
 }
@@ -1022,18 +1017,18 @@ function canSuppress(g) {
   return !!g.interference || g.popups.some((p) => p.corruptIndex >= 0);
 }
 
-// 全屏抢麦：点一下只推进一格进度，点满才算是压回去。
+// 全屏抢麦：点一下涨一截进度，同时进度自己往下掉。
 // 时间没停：倒计时归零时进度没满就进接管（在 update 里结算）。
 function mashInterference(g) {
   if (g.phase !== 'live' || g.possession > 0) return false;
   const it = g.interference;
   if (!it) return false;
 
-  it.clicks = (it.clicks || 0) + 1;
+  it.prog = Math.min(1, (it.prog || 0) + rand(...CONFIG.mashGain));
   it.pulse = 1;
   g.shake = Math.max(g.shake, 0.07);
 
-  if (it.clicks < it.need) return false; // 还没压回去，只给了个手感
+  if (it.prog < 1) return false; // 还没压回去，只给了个手感
 
   // 满了：这就是原来「屏蔽」的那一下就成功的代价
   g.health -= CONFIG.suppressCost.health;
@@ -1179,9 +1174,10 @@ function update(g, dtRaw) {
   // 戏中人
   if (g.interference) {
     const it = g.interference;
-    if (it.need == null) it.need = mashNeed(g); // 调试/测试直接塞进来的对象
-    if (it.clicks == null) it.clicks = 0;
+    if (it.prog == null) it.prog = 0; // 调试/测试直接塞进来的对象
+    if (it.decay == null) it.decay = rand(...CONFIG.mashDecay);
     if (it.pulse > 0) it.pulse = Math.max(0, it.pulse - dt * 4);
+    it.prog = Math.max(0, it.prog - it.decay * dt);
     it.timeLeft -= dt;
     if (it.timeLeft <= 0) {
       const critical = !!g.interference.critical;
@@ -1564,7 +1560,7 @@ function drawStage(ctx, g, ui) {
   if (g.interference) {
     const it = g.interference;
     const ratio = Math.max(0, it.timeLeft / it.maxTime);
-    const mash = Math.min(1, (it.clicks || 0) / Math.max(1, it.need || 1));
+    const mash = Math.max(0, Math.min(1, it.prog || 0));
     const pulse = it.pulse || 0;
     // 时间越少，闪得越快
     const speed = 4 + (1 - ratio) * 46;
@@ -1611,53 +1607,53 @@ function drawStage(ctx, g, ui) {
     ctx.textBaseline = 'middle';
     ctx.fillText('戏 · 中 · 人', W / 2, boxY + 30);
 
+    // 时间只剩一个不显眼的小数字（不留进度条）
+    ctx.textAlign = 'right';
+    ctx.font = font(11, 500);
+    ctx.fillStyle = 'rgba(255,214,206,0.5)';
+    ctx.fillText(`${Math.max(0, it.timeLeft).toFixed(1)}s`, boxX + boxW - 22, boxY + 30);
+
     ctx.fillStyle = '#fff4f1';
     ctx.font = font(27, 700);
+    ctx.textAlign = 'center';
     const lines = wrap(ctx, it.text, W - 76);
-    const baseY = boxY + boxH / 2 - 40 - (lines.length - 1) * 19;
+    const baseY = boxY + boxH / 2 - 34 - (lines.length - 1) * 19;
     lines.forEach((l, i) => ctx.fillText(l, W / 2, baseY + i * 38));
 
-    // 两条分开的条：上面是时间倒计时，下面是清除进度
+    // 清除进度：只有一条，不显示次数，只让你看见「在涨」和「在掉」
     const barX = boxX + 40;
     const barW = boxW - 80;
-    const barH = 7;
-    const tY = boxY + boxH - 78;
-    const pY = boxY + boxH - 46;
+    const barH = 8;
+    const pY = boxY + boxH - 64;
 
-    ctx.textBaseline = 'bottom';
-    ctx.textAlign = 'left';
-    ctx.font = font(10, 600);
-    ctx.fillStyle = 'rgba(255,214,206,0.8)';
-    ctx.fillText('时间', barX, tY - 6);
-    ctx.textAlign = 'right';
-    ctx.fillText(`${Math.max(0, it.timeLeft).toFixed(1)}s`, barX + barW, tY - 6);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    rr(ctx, barX, pY, barW, barH, barH / 2);
+    ctx.fill();
 
-    ctx.fillStyle = 'rgba(0,0,0,0.38)';
-    ctx.fillRect(barX, tY, barW, barH);
-    ctx.fillStyle = ratio > 0.35 ? '#ffe0d6' : '#ff7a5f';
-    ctx.fillRect(barX, tY, barW * ratio, barH);
+    if (mash > 0) {
+      const fillW = Math.max(barH, barW * mash);
+      ctx.save();
+      ctx.beginPath();
+      rr(ctx, barX, pY, fillW, barH, barH / 2);
+      ctx.clip();
+      const g2 = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+      g2.addColorStop(0, 'rgba(127,224,208,0.55)');
+      g2.addColorStop(1, 'rgba(200,255,244,0.95)');
+      ctx.fillStyle = g2;
+      ctx.fillRect(barX, pY, fillW, barH);
+      ctx.restore();
 
-    ctx.textAlign = 'left';
-    ctx.fillStyle = 'rgba(200,255,244,0.9)';
-    ctx.fillText('压回去', barX, pY - 6);
-    ctx.textAlign = 'right';
-    ctx.fillText(`${Math.min(it.clicks || 0, it.need)}/${it.need}`, barX + barW, pY - 6);
-
-    ctx.fillStyle = 'rgba(0,0,0,0.42)';
-    ctx.fillRect(barX, pY, barW, barH);
-    ctx.fillStyle = '#7fe0d0';
-    ctx.fillRect(barX, pY, barW * mash, barH);
-    if (mash > 0 && mash < 1) {
-      // 进度头部亮一点，给「还差几下」的准头
-      ctx.fillStyle = `rgba(224,255,250,${0.45 + 0.55 * pulse})`;
-      ctx.fillRect(barX + barW * mash - 3, pY, 3, barH);
+      // 头部亮一下，点的时候更明显
+      ctx.fillStyle = `rgba(235,255,251,${0.35 + 0.6 * pulse})`;
+      rr(ctx, barX + fillW - 4, pY - 1, 4, barH + 2, 2);
+      ctx.fill();
     }
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,232,226,0.68)';
-    ctx.font = font(10.5, 500);
-    ctx.fillText('连点面板（或按「屏蔽」）把他压回去', W / 2, boxY + boxH - 18);
+    ctx.fillStyle = 'rgba(255,236,231,0.8)';
+    ctx.font = font(11.5, 600);
+    ctx.fillText('连续点击任意处以屏蔽戏中人干扰！', W / 2, boxY + boxH - 30);
   }
 
   // 交还话筒之后，手还在抖
@@ -2018,7 +2014,7 @@ function drawControls(ctx, g) {
   const ready = cd <= 0;
   const hasTarget = canSuppress(g);
   const it = g.interference;
-  const mash = it ? Math.min(1, (it.clicks || 0) / Math.max(1, it.need || 1)) : 0;
+  const mash = it ? Math.max(0, Math.min(1, it.prog || 0)) : 0;
 
   ACTIONS.forEach((a, i) => {
     const r = LAYOUT.actions[i];
@@ -2082,7 +2078,7 @@ function drawControls(ctx, g) {
   ctx.font = font(ready ? 12 : 13, 700);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(it ? '连点' : ready ? '屏蔽' : cd.toFixed(1), cx, cy);
+  ctx.fillText(ready ? '屏蔽' : cd.toFixed(1), cx, cy);
 }
 
 function hexA(hex, a) {
@@ -2730,9 +2726,13 @@ if (params.has('crit') && game.phase === 'live') {
     timeLeft: 2.6, maxTime: 3.2, critical: true,
   });
 }
-// ?mash=4 把抢麦的清除进度先点掉 4 下（截图用）
+// ?mash=4 把抢麦的清除进度先点掉 4 下（截图用）；?prog=0.6 直接设进度
 if (params.has('mash') && game.interference) {
-  game.interference.clicks = Math.max(0, Number(params.get('mash') || 0));
+  const n = Math.max(0, Number(params.get('mash') || 0));
+  game.interference.prog = Math.min(0.99, n * 0.2);
+}
+if (params.has('prog') && game.interference) {
+  game.interference.prog = Math.max(0, Math.min(0.99, Number(params.get('prog') || 0)));
 }
 if (params.has('scene')) {
   game.phase = 'scene';
