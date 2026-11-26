@@ -1299,6 +1299,13 @@ function draw(g, ctx, ui) {
   if (g.phase === 'live' && g.shake > 0) {
     ctx.translate((Math.random() - 0.5) * g.shake * 10, (Math.random() - 0.5) * g.shake * 10);
   }
+  // 每点一下，画面整体轻微「顶」一下（和震屏一起构成打击感）
+  if (g.phase === 'live' && g.interference && g.interference.punch > 0) {
+    const s = 1 + g.interference.punch * 0.012;
+    ctx.translate(W / 2, H / 2);
+    ctx.scale(s, s);
+    ctx.translate(-W / 2, -H / 2);
+  }
   drawBackdrop(ctx);
 
   if (g.phase === 'scene') {
@@ -2602,6 +2609,7 @@ function handleTap(p) {
 
   // live：抢麦期间点哪里都算连点（提示写的是「连续点击任意处」）
   if (g.interference) {
+    if (navigator.vibrate) navigator.vibrate(8); // 手机上每点一下给一下震动
     mashInterference(g, p.x, p.y);
     return;
   }
