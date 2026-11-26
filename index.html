@@ -78,6 +78,9 @@ const CONFIG = {
   popupH: 66,
   interferenceEvery: [10, 15],
   interferenceWindow: 3.2,
+  // 「抢麦」不再是按一下就好：要在倒计时归零前连点这么多下把进度条清满。
+  // 每天会覆盖这个值（DAYS[i].mash），时间倒计时和清除进度是两回事。
+  mashNeed: 10,
   missPenalty: { attention: 26, mental: 1 },   // 漏接主要扣关注
   wrongPenalty: { attention: 18, mental: 0 },  // 选错也只扣关注
   interferencePenalty: { attention: 70, mental: 22 },
@@ -101,15 +104,15 @@ const DAYS = [
   // 三天难度曲线：弹幕越来越密，他抢按钮和抢麦也越来越勤
   // goal 是「到这一天结束时累计要到多少」
   {
-    day: 1, duration: 75, goal: 1500,
+    day: 1, duration: 75, goal: 1500, mash: 9,
     lineGap: 1.75, corrupt: [1.9, 2.7], interference: [14, 19],
   },
   {
-    day: 2, duration: 85, goal: 2500,
+    day: 2, duration: 85, goal: 2500, mash: 11,
     lineGap: 1.25, corrupt: [1.2, 2.0], interference: [10, 14],
   },
   {
-    day: 3, duration: 95, goal: 3400,
+    day: 3, duration: 95, goal: 3400, mash: 13,
     lineGap: 1.15, corrupt: [0.9, 1.5], interference: [7, 11],
   },
 ];
@@ -885,14 +888,28 @@ function removePopup(g, popup) {
   g.spawnTimer = Math.max(g.spawnTimer, 0.3);
 }
 
-function spawnInterference(g) {
-  g.interference = {
-    text: pick(INTERFERENCE),
-    timeLeft: CONFIG.interferenceWindow,
-    maxTime: CONFIG.interferenceWindow,
-    // 精神已经不够扣了：这一下会直接见底
-    critical: g.mental <= CONFIG.interferencePenalty.mental,
+// 这一天要连点多少下才能把他压回去
+function mashNeed(g) {
+  const cfg = DAYS[g.day - 1];
+  return (cfg && cfg.mash) || CONFIG.mashNeed;
+}
+
+// 抢麦面板的状态：时间倒计时（timeLeft）和清除进度（clicks / need）各算各的
+function makeInterference(g, opts = {}) {
+  const timeLeft = opts.timeLeft ?? CONFIG.interferenceWindow;
+  return {
+    text: opts.text ?? pick(INTERFERENCE),
+    timeLeft,
+    maxTime: opts.maxTime ?? timeLeft,
+    clicks: opts.clicks ?? 0,
+    need: opts.need ?? mashNeed(g),
+    pulse: 0,        // 每点一下闪一下，纯表现
+    critical: opts.critical ?? g.mental <= CONFIG.interferencePenalty.mental,
   };
+}
+
+function spawnInterference(g) {
+  g.interference = makeInterference(g);
   g.shake = 0.4;
 }
 
@@ -1005,24 +1022,49 @@ function canSuppress(g) {
   return !!g.interference || g.popups.some((p) => p.corruptIndex >= 0);
 }
 
+// 全屏抢麦：点一下只推进一格进度，点满才算是压回去。
+// 时间没停：倒计时归零时进度没满就进接管（在 update 里结算）。
+function mashInterference(g) {
+  if (g.phase !== 'live' || g.possession > 0) return false;
+  const it = g.interference;
+  if (!it) return false;
+
+  it.clicks = (it.clicks || 0) + 1;
+  it.pulse = 1;
+  g.shake = Math.max(g.shake, 0.07);
+
+  if (it.clicks < it.need) return false; // 还没压回去，只给了个手感
+
+  // 满了：这就是原来「屏蔽」的那一下就成功的代价
+  g.health -= CONFIG.suppressCost.health;
+  g.mental += CONFIG.suppressCost.mental;
+  g.suppressCd = CONFIG.suppressCd;
+  g.corruptTimer = rand(...g.corruptRange);
+  g.interference = null;
+  g.interferenceIn = rand(...g.interferenceRange);
+  g.suppressed += 1;
+
+  g.flash = 0.22;
+  float(g, '压回去了', '#7fe0d0', 240, 300);
+  applyTotals(g);
+  checkDeath(g);
+  return true;
+}
+
 function suppress(g) {
   if (g.phase !== 'live' || g.possession > 0) return false;
-  if (g.suppressCd > 0) return false;
-  if (!canSuppress(g)) return false; // 没东西可屏蔽：不消耗、不进 CD
+  // 抢麦在的时候，按一下不算数，只算连点里的第一下（且不受屏蔽 CD 限制）
+  if (g.interference) return mashInterference(g);
 
-  const hadInterference = !!g.interference;
+  if (g.suppressCd > 0) return false;
   const cleared = g.popups.filter((p) => p.corruptIndex >= 0);
+  if (!cleared.length) return false; // 没东西可屏蔽：不消耗、不进 CD
 
   g.suppressCd = CONFIG.suppressCd;
   g.corruptTimer = rand(...g.corruptRange);
   g.health -= CONFIG.suppressCost.health;
   g.mental += CONFIG.suppressCost.mental;
 
-  if (hadInterference) {
-    g.interference = null;
-    g.interferenceIn = rand(...g.interferenceRange);
-    g.suppressed += 1;
-  }
   for (const p of cleared) {
     p.corruptIndex = -1;
     p.corruptText = '';
@@ -1030,8 +1072,7 @@ function suppress(g) {
   g.corruptCleared += cleared.length;
 
   g.flash = 0.22;
-  const label = hadInterference ? '屏蔽成功' : '按回去了';
-  float(g, label, '#7fe0d0', 240, 300);
+  float(g, '按回去了', '#7fe0d0', 240, 300);
   applyTotals(g);
   checkDeath(g);
   return true;
@@ -1066,16 +1107,19 @@ function update(g, dtRaw) {
   g.mental -= CONFIG.mentalDrain * dt;
 
   // 弹幕弹出：越接近当天目标，刷得越快
-  g.spawnTimer -= dt;
-  if (g.spawnTimer <= 0) {
-    spawnPopup(g);
-    const progress = Math.min(1, g.attention / Math.max(1, g.goal));
-    g.spawnTimer = g.lineGapCur * (1 - CONFIG.rushGain * progress);
+  // 他抢麦的时候刷屏停住：面板把弹幕整个盖住了，看不见的东西不该罚
+  if (!g.interference) {
+    g.spawnTimer -= dt;
+    if (g.spawnTimer <= 0) {
+      spawnPopup(g);
+      const progress = Math.min(1, g.attention / Math.max(1, g.goal));
+      g.spawnTimer = g.lineGapCur * (1 - CONFIG.rushGain * progress);
+    }
   }
 
-  // 各自倒计时
+  // 各自倒计时（抢麦期间冻住，见上）
   for (const p of g.popups) {
-    p.timeLeft -= dt;
+    if (!g.interference) p.timeLeft -= dt;
     p.age += dt;
     if (p.autoTimer >= 0) p.autoTimer -= dt;
   }
@@ -1134,8 +1178,12 @@ function update(g, dtRaw) {
 
   // 戏中人
   if (g.interference) {
-    g.interference.timeLeft -= dt;
-    if (g.interference.timeLeft <= 0) {
+    const it = g.interference;
+    if (it.need == null) it.need = mashNeed(g); // 调试/测试直接塞进来的对象
+    if (it.clicks == null) it.clicks = 0;
+    if (it.pulse > 0) it.pulse = Math.max(0, it.pulse - dt * 4);
+    it.timeLeft -= dt;
+    if (it.timeLeft <= 0) {
       const critical = !!g.interference.critical;
       g.mental -= CONFIG.interferencePenalty.mental;
       g.suppressedLate += 1;
@@ -1174,6 +1222,8 @@ const LAYOUT = {
   chapterOptions: [0, 1, 2].map((i) => ({ x: 40, y: 402 + i * 64, w: W - 80, h: 54 })),
   retry: { x: 70, y: 396, w: W - 140, h: 66 },
   giveup: { x: 120, y: 492, w: W - 240, h: 44 },
+  // 抢麦面板：连点它的任意位置都算一下「压回去」
+  interference: { x: 8, y: 122, w: W - 16, h: 318 },
   stageTop: 96,
   stageBottom: 462,
 };
@@ -1512,32 +1562,42 @@ function drawStage(ctx, g, ui) {
   }
 
   if (g.interference) {
-    const ratio = Math.max(0, g.interference.timeLeft / g.interference.maxTime);
+    const it = g.interference;
+    const ratio = Math.max(0, it.timeLeft / it.maxTime);
+    const mash = Math.min(1, (it.clicks || 0) / Math.max(1, it.need || 1));
+    const pulse = it.pulse || 0;
     // 时间越少，闪得越快
     const speed = 4 + (1 - ratio) * 46;
     const flicker = 0.5 + 0.5 * Math.sin((performance.now() / 1000) * speed);
-    const boxY = 122;
-    const boxH = 318;
+    const box = LAYOUT.interference;
+    const { x: boxX, y: boxY, w: boxW, h: boxH } = box;
 
-    const crit = !!g.interference.critical;
-    const box = ctx.createLinearGradient(0, boxY, 0, boxY + boxH);
+    const crit = !!it.critical;
+    const grad = ctx.createLinearGradient(0, boxY, 0, boxY + boxH);
     if (crit) {
-      box.addColorStop(0, '#ff2b2b');
-      box.addColorStop(0.55, '#c40000');
-      box.addColorStop(1, '#6d0000');
+      grad.addColorStop(0, '#ff2b2b');
+      grad.addColorStop(0.55, '#c40000');
+      grad.addColorStop(1, '#6d0000');
     } else {
-      box.addColorStop(0, '#d42a2a');
-      box.addColorStop(0.55, '#a81616');
-      box.addColorStop(1, '#6d0b0b');
+      grad.addColorStop(0, '#d42a2a');
+      grad.addColorStop(0.55, '#a81616');
+      grad.addColorStop(1, '#6d0b0b');
     }
-    ctx.fillStyle = box;
-    rr(ctx, 8, boxY, W - 16, boxH, 16);
+    ctx.fillStyle = grad;
+    rr(ctx, boxX, boxY, boxW, boxH, 16);
     ctx.fill();
 
     // 频闪：整块面板在亮红上叠一层跳动的光
     ctx.fillStyle = `rgba(255,90,70,${0.16 * flicker})`;
-    rr(ctx, 8, boxY, W - 16, boxH, 16);
+    rr(ctx, boxX, boxY, boxW, boxH, 16);
     ctx.fill();
+
+    // 点一下面板亮一下
+    if (pulse > 0) {
+      ctx.fillStyle = `rgba(255,255,255,${0.1 * pulse})`;
+      rr(ctx, boxX, boxY, boxW, boxH, 16);
+      ctx.fill();
+    }
 
     ctx.strokeStyle = crit
       ? `rgba(255,40,30,${0.5 + 0.5 * flicker})`
@@ -1553,19 +1613,51 @@ function drawStage(ctx, g, ui) {
 
     ctx.fillStyle = '#fff4f1';
     ctx.font = font(27, 700);
-    const lines = wrap(ctx, g.interference.text, W - 76);
-    const baseY = boxY + boxH / 2 - (lines.length - 1) * 19;
+    const lines = wrap(ctx, it.text, W - 76);
+    const baseY = boxY + boxH / 2 - 40 - (lines.length - 1) * 19;
     lines.forEach((l, i) => ctx.fillText(l, W / 2, baseY + i * 38));
 
-    const bw = W - 96;
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.fillRect(48, boxY + boxH - 26, bw, 4);
-    ctx.fillStyle = '#ffe3dd';
-    ctx.fillRect(48, boxY + boxH - 26, bw * ratio, 4);
+    // 两条分开的条：上面是时间倒计时，下面是清除进度
+    const barX = boxX + 40;
+    const barW = boxW - 80;
+    const barH = 7;
+    const tY = boxY + boxH - 78;
+    const pY = boxY + boxH - 46;
 
-    ctx.fillStyle = 'rgba(255,232,226,0.72)';
-    ctx.font = font(11, 500);
-    ctx.fillText('按「屏蔽」把他按回去', W / 2, boxY + boxH - 10);
+    ctx.textBaseline = 'bottom';
+    ctx.textAlign = 'left';
+    ctx.font = font(10, 600);
+    ctx.fillStyle = 'rgba(255,214,206,0.8)';
+    ctx.fillText('时间', barX, tY - 6);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${Math.max(0, it.timeLeft).toFixed(1)}s`, barX + barW, tY - 6);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.38)';
+    ctx.fillRect(barX, tY, barW, barH);
+    ctx.fillStyle = ratio > 0.35 ? '#ffe0d6' : '#ff7a5f';
+    ctx.fillRect(barX, tY, barW * ratio, barH);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(200,255,244,0.9)';
+    ctx.fillText('压回去', barX, pY - 6);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${Math.min(it.clicks || 0, it.need)}/${it.need}`, barX + barW, pY - 6);
+
+    ctx.fillStyle = 'rgba(0,0,0,0.42)';
+    ctx.fillRect(barX, pY, barW, barH);
+    ctx.fillStyle = '#7fe0d0';
+    ctx.fillRect(barX, pY, barW * mash, barH);
+    if (mash > 0 && mash < 1) {
+      // 进度头部亮一点，给「还差几下」的准头
+      ctx.fillStyle = `rgba(224,255,250,${0.45 + 0.55 * pulse})`;
+      ctx.fillRect(barX + barW * mash - 3, pY, 3, barH);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,232,226,0.68)';
+    ctx.font = font(10.5, 500);
+    ctx.fillText('连点面板（或按「屏蔽」）把他压回去', W / 2, boxY + boxH - 18);
   }
 
   // 交还话筒之后，手还在抖
@@ -1925,6 +2017,8 @@ function drawControls(ctx, g) {
   const cd = g.suppressCd || 0;
   const ready = cd <= 0;
   const hasTarget = canSuppress(g);
+  const it = g.interference;
+  const mash = it ? Math.min(1, (it.clicks || 0) / Math.max(1, it.need || 1)) : 0;
 
   ACTIONS.forEach((a, i) => {
     const r = LAYOUT.actions[i];
@@ -1957,7 +2051,7 @@ function drawControls(ctx, g) {
   const cx = s.x + s.w / 2;
   const cy = s.y + s.h / 2;
   const radius = 29;
-  const live = hasTarget && ready && g.possession <= 0;
+  const live = hasTarget && (ready || !!it) && g.possession <= 0;
 
   ctx.beginPath();
   ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -1967,7 +2061,15 @@ function drawControls(ctx, g) {
   ctx.lineWidth = live ? 1.8 : 1;
   ctx.stroke();
 
-  if (cd > 0) {
+  if (it) {
+    // 抢麦时的按钮：扇形显示已点了几下（和面板上的进度条同一份数据）
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, radius - 1, -Math.PI / 2, -Math.PI / 2 + mash * Math.PI * 2);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(127,224,208,0.3)';
+    ctx.fill();
+  } else if (cd > 0) {
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.arc(cx, cy, radius - 1, -Math.PI / 2, -Math.PI / 2 + (cd / CONFIG.suppressCd) * Math.PI * 2);
@@ -1980,7 +2082,7 @@ function drawControls(ctx, g) {
   ctx.font = font(ready ? 12 : 13, 700);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(ready ? '屏蔽' : cd.toFixed(1), cx, cy);
+  ctx.fillText(it ? '连点' : ready ? '屏蔽' : cd.toFixed(1), cx, cy);
 }
 
 function hexA(hex, a) {
@@ -2448,6 +2550,11 @@ function handleTap(p) {
   }
 
   // live：先判弹幕气泡，再判按钮
+  // 抢麦面板盖住整块舞台，点它就是连点（按钮和气泡在面板外面，照常能用）
+  if (g.interference && inRect(p, LAYOUT.interference)) {
+    mashInterference(g);
+    return;
+  }
   if (inRect(p, LAYOUT.suppress)) {
     suppress(g);
     return;
@@ -2548,7 +2655,11 @@ function autoPlay(seconds, stopAt = null, maxSurrender = 99) {
     actIn -= dt;
     if (actIn > 0) continue;            // 模拟真人手速：不要每帧都按
     actIn = 0.35;
-    if (g.interference) { suppress(g); continue; }
+    if (g.interference) {
+      // 模拟真人连点：一个手速周期（0.35s）里砸三下，约 8~9 下/秒
+      for (let k = 0; k < 3 && g.interference; k++) suppress(g);
+      continue;
+    }
     const slot = [...corruptedSlots(g)][0];
     if (slot !== undefined && g.surrenders < maxSurrender && (maxSurrender < 99 || Math.random() < 0.3)) { letHimSay(g, slot); continue; }
     const head = activeBubble(g);
@@ -2605,17 +2716,23 @@ if (params.has('corrupt') && game.phase === 'live') {
 }
 if (params.has('press')) suppress(game);
 if (params.has('interf') && game.phase === 'live') {
-  game.interference = { text: '你知道他们在看什么吗？在看你能撑到什么时候。', timeLeft: 3.2, maxTime: 3.2 };
+  game.interference = makeInterference(game, {
+    text: '你知道他们在看什么吗？在看你能撑到什么时候。',
+  });
 }
 if (params.has('possess') && game.phase === 'live') {
   game.possession = Number(params.get('possess') || 2.4);
 }
 if (params.has('crit') && game.phase === 'live') {
   game.mental = 15;
-  game.interference = {
+  game.interference = makeInterference(game, {
     text: '你知道他们在看什么吗？在看你能撑到什么时候。',
     timeLeft: 2.6, maxTime: 3.2, critical: true,
-  };
+  });
+}
+// ?mash=4 把抢麦的清除进度先点掉 4 下（截图用）
+if (params.has('mash') && game.interference) {
+  game.interference.clicks = Math.max(0, Number(params.get('mash') || 0));
 }
 if (params.has('scene')) {
   game.phase = 'scene';
