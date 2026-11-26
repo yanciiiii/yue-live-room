@@ -70,7 +70,7 @@ const H = 640;
 
 const CONFIG = {
   attentionDecay: 2.2,      // 关注度自然流失（每秒）
-  mentalDrain: 0.08,        // 精神值自然消耗（每秒）
+  mentalDrain: 0.32,        // 精神值自然消耗（每秒；精神满值 400）
   lineGap: 1.35,            // 弹幕弹出间隔（默认值，每天会被覆盖）
   lineWindow: 4.6,          // 每条弹幕的容错时间
   maxQueue: 3,              // 同时最多挂几条
@@ -83,10 +83,10 @@ const CONFIG = {
   mashGain: [0.10, 0.18],   // 点一下涨多少（随机）
   mashDecay: [0.20, 0.26],  // 每秒自己掉多少（每次抢麦随机一个斜率）
   mashShake: 0.34,          // 每点一下的震屏强度
-  missPenalty: { attention: 26, mental: 1 },   // 漏接主要扣关注
-  wrongPenalty: { attention: 18, mental: 0 },  // 选错也只扣关注
-  interferencePenalty: { attention: 70, mental: 22 },
-  suppressCost: { health: 2.5, mental: 8 },
+  missPenalty: { attention: 30, mental: 4 },   // 漏接：扣关注为主，精神也掉
+  wrongPenalty: { attention: 18, mental: 0 },  // 选错只扣关注
+  interferencePenalty: { attention: 70, mental: 88 },
+  suppressCost: { health: 10, mental: 32 },
   suppressCd: 1.0,         // 屏蔽冷却（秒）
   corruptEvery: [1.2, 2.0], // 两次「我来吧。」之间隔多久（随机）
   corruptReveal: 0.3,      // 抢按钮的「亮出来」延迟：这之前按钮看起来和用起来都还是原样
@@ -99,7 +99,8 @@ const CONFIG = {
   rushGain: 0.35,           // 关注度越接近目标，弹幕越快（最多快 35%）
 };
 
-const MAX = { attention: 12000, mental: 100, health: 100 };
+// 精神 / 健康都按 400 满值算：这样每一次回应、每一次失误都是整数，没有 0.25 这种碎数
+const MAX = { attention: 12000, mental: 400, health: 400 };
 
 // 每天：直播时长 + 当天的累计目标
 const DAYS = [
@@ -120,7 +121,7 @@ const DAYS = [
 ];
 
 // 每天之间睡一觉，回一点（第 1 天前不生效）
-const REST = { mental: 14, health: 20 };
+const REST = { mental: 56, health: 80 };
 
 // 戏中人抢按钮
 const CORRUPT = {
@@ -128,7 +129,7 @@ const CORRUPT = {
   lowBonus: 0.34,    // 精神越低，概率越高（最高 +0.34）
   biasToCorrect: 0.82, // 有多大概率正好长在「对的那个按钮」上
   attention: 220,    // 选他 -> 关注暴涨
-  mental: -16,       // 精神暴跌（比之前轻一点，重点还是在关注度上）
+  mental: -64,       // 精神暴跌（满值 400，约等于六分之一）
   label: '我来吧。',  // 按钮上显示的字：这是「他」在说话，不是玩家在说话
   lines: [
     '「你累了，我来。」',
@@ -168,7 +169,7 @@ const CHAPTERS = {
       options: [
         {
           label: '「挺好的，最近有点忙」',
-          mental: -4,
+          mental: -16,
           health: 0,
           reply: [
             '我按下发送。',
@@ -178,7 +179,7 @@ const CHAPTERS = {
         },
         {
           label: '不回，把手机扣过去',
-          mental: 2,
+          mental: 8,
           health: 0,
           reply: [
             '我把手机倒扣在桌上。',
@@ -187,8 +188,8 @@ const CHAPTERS = {
         },
         {
           label: '「有点累。」',
-          mental: 6,
-          health: -2,
+          mental: 24,
+          health: -8,
           reply: [
             '这次她回得很快：「那就回来歇两天，妈给你做饭。」',
             '我盯着那句话看了很久。',
@@ -222,7 +223,7 @@ const CHAPTERS = {
       options: [
         {
           label: '关灯，装没看见',
-          mental: -2,
+          mental: -8,
           health: 0,
           reply: [
             '我关了灯，摸黑回到床上。',
@@ -231,7 +232,7 @@ const CHAPTERS = {
         },
         {
           label: '问他：你到底想要什么',
-          mental: -8,
+          mental: -32,
           health: 0,
           reply: [
             '「我想活。」他说得很平静，像在报一个天气。',
@@ -242,8 +243,8 @@ const CHAPTERS = {
         },
         {
           label: '吃一片药',
-          mental: 8,
-          health: -6,
+          mental: 32,
+          health: -24,
           reply: [
             '药片在舌头上化开，苦得发麻。',
             '他的声音慢慢退到很远的地方，像隔着一堵墙。',
@@ -309,6 +310,13 @@ const LINES = {
     '装什么可怜，卖惨博同情',
     '换人吧，隔壁比你好一百倍',
   ],
+  doubt: [
+    '演的吧，这也太假了',
+    '主播今天怎么怪怪的，装的？',
+    '这段是不是提前背好的',
+    '你确定你刚才说对了？',
+    '笑死，这也叫回应',
+  ],
   spam: [
     '666666666666',
     '来了来了来了来了',
@@ -350,8 +358,8 @@ const ACTIONS = [
     desc: '接住他的话',
     good: ['comfort', 'sad', 'ask', 'probe'],
     attention: 42,
-    mental: -0.25,
-    health: -0.25,
+    mental: -1,
+    health: -1,
     color: '#ffb3a7',
   },
   {
@@ -360,29 +368,29 @@ const ACTIONS = [
     desc: '炒热气氛',
     good: ['joke', 'gift', 'spam'],
     attention: 42,
-    mental: -0.2,
-    health: -0.5,
+    mental: -1,
+    health: -2,
     color: '#ffd479',
   },
   {
     id: 'song',
     label: '唱歌',
     desc: '撑住场面',
-    good: ['song', 'comfort', 'sad'],
+    good: ['song', 'comfort', 'sad', 'gift'],
     attention: 38,
-    mental: -0.4,
-    health: -1.0,
+    mental: -2,
+    health: -4,
     color: '#a9c8ff',
   },
   {
     id: 'silent',
     label: '沉默',
     desc: '不理他 / 喘口气',
-    good: ['rant'],
-    attention: 18,
+    good: ['rant', 'doubt', 'spam'],
+    attention: 28,
     missPenalty: -14,
-    mental: 6,
-    health: 4,
+    mental: 24,
+    health: 16,
     color: '#9aa8b8',
   },
 ];
@@ -660,7 +668,7 @@ function finishRun(g, forcedKey) {
   let key = forcedKey;
   if (!key) {
     if (g.surrenders >= 3) key = 'curtain';
-    else if (g.attention >= CONFIG.winAttention) key = g.mental >= 40 ? 'coexist' : 'imbalance';
+    else if (g.attention >= CONFIG.winAttention) key = g.mental >= 160 ? 'coexist' : 'imbalance';
     else key = 'nobody';
   }
   g.ending = { key, ...ENDINGS[key] };
@@ -1245,6 +1253,7 @@ const TYPE_TAG = {
   sad: '低落',
   ask: '求助',
   rant: '挑衅',
+  doubt: '质疑',
   spam: '刷屏',
   joke: '要乐子',
   song: '点歌',
@@ -2741,7 +2750,7 @@ function autoPlay(seconds, stopAt = null, maxSurrender = 99) {
     if (slot !== undefined && g.surrenders < maxSurrender && (maxSurrender < 99 || Math.random() < 0.3)) { letHimSay(g, slot); continue; }
     const head = activeBubble(g);
     if (!head) continue;
-    if (g.health < 30 || g.mental < 25) respond(g, 'silent');
+    if (g.health < 120 || g.mental < 100) respond(g, 'silent');
     else respond(g, byType[head.type] || 'warm');
   }
 }
@@ -2801,7 +2810,7 @@ if (params.has('possess') && game.phase === 'live') {
   game.possession = Number(params.get('possess') || 2.4);
 }
 if (params.has('crit') && game.phase === 'live') {
-  game.mental = 15;
+  game.mental = 60;
   game.interference = makeInterference(game, {
     text: '你知道他们在看什么吗？在看你能撑到什么时候。',
     timeLeft: 2.0, maxTime: 2.5, critical: true,
@@ -2828,10 +2837,10 @@ if (params.has('scene')) {
   game.sceneIndex = Number.isFinite(n) && n > 1 ? Math.min(n - 1, game.sceneLines.length - 1) : 0;
 }
 if (params.has('mental') && game.phase === 'live') {
-  game.mental = Number(params.get('mental') || 100);
+  game.mental = Number(params.get('mental') || 400);
 }
 if (params.has('die') && game.phase === 'live') {
-  game.mental = 0.05;
+  game.mental = 0.2;
   for (let i = 0; i < 30; i++) update(game, 1 / 60);
 }
 if (params.has('after')) {
