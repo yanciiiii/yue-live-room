@@ -2545,9 +2545,8 @@ function handleTap(p) {
     return;
   }
 
-  // live：先判弹幕气泡，再判按钮
-  // 抢麦面板盖住整块舞台，点它就是连点（按钮和气泡在面板外面，照常能用）
-  if (g.interference && inRect(p, LAYOUT.interference)) {
+  // live：抢麦期间点哪里都算连点（提示写的是「连续点击任意处」）
+  if (g.interference) {
     mashInterference(g);
     return;
   }
@@ -2602,7 +2601,11 @@ window.addEventListener('keydown', (e) => {
   if (n >= 1 && n <= 4) {
     e.preventDefault();
     if (g.phase === 'chapter' && g.choiceActive) chooseOption(g, n - 1);
-    else if (g.phase === 'live') tapAction(n - 1);
+    else if (g.phase === 'live') {
+      // 抢麦时数字键也算连点一下，避免「按了快捷键结果被扣分」
+      if (g.interference) mashInterference(g);
+      else tapAction(n - 1);
+    }
   }
 });
 
