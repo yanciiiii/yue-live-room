@@ -80,8 +80,9 @@ const CONFIG = {
   interferenceWindow: 3.2,
   // 「抢麦」的清除进度：点一下涨一截，同时每秒自己往下掉。
   // 两条独立：时间只减不增，进度有涨有落。
-  mashGain: [0.15, 0.25],   // 点一下涨多少（随机）
-  mashDecay: [0.18, 0.20],  // 每秒自己掉多少（每次抢麦随机一个斜率）
+  mashGain: [0.16, 0.26],   // 点一下涨多少（随机）
+  mashDecay: [0.26, 0.34],  // 每秒自己掉多少（每次抢麦随机一个斜率）
+  mashShake: 0.34,          // 每点一下的震屏强度
   missPenalty: { attention: 26, mental: 1 },   // 漏接主要扣关注
   wrongPenalty: { attention: 18, mental: 0 },  // 选错也只扣关注
   interferencePenalty: { attention: 70, mental: 22 },
@@ -542,6 +543,7 @@ function createGame() {
     corruptCleared: 0,
 
     floats: [],
+    hits: [],
     flash: 0,
     shake: 0,
 
@@ -633,6 +635,7 @@ function startLive(g, day) {
   g.afterglow = 0;
   g.clock = 0;
   g.floats = [];
+  g.hits = [];
   g.flash = 0;
   g.shake = 0;
 }
@@ -899,6 +902,7 @@ function makeInterference(g, opts = {}) {
     prog: opts.prog ?? 0,          // 0~1，点一下涨、每秒自己掉
     decay: opts.decay ?? rand(...CONFIG.mashDecay),
     pulse: 0,                       // 每点一下闪一下，纯表现
+    punch: 0,                       // 每点一下的「打中」回弹，纯表现
     critical: opts.critical ?? g.mental <= CONFIG.interferencePenalty.mental,
   };
 }
@@ -1019,14 +1023,20 @@ function canSuppress(g) {
 
 // 全屏抢麦：点一下涨一截进度，同时进度自己往下掉。
 // 时间没停：倒计时归零时进度没满就进接管（在 update 里结算）。
-function mashInterference(g) {
+function mashInterference(g, x, y) {
   if (g.phase !== 'live' || g.possession > 0) return false;
   const it = g.interference;
   if (!it) return false;
 
   it.prog = Math.min(1, (it.prog || 0) + rand(...CONFIG.mashGain));
   it.pulse = 1;
-  g.shake = Math.max(g.shake, 0.07);
+  it.punch = 1;
+  g.shake = Math.max(g.shake, CONFIG.mashShake);
+  g.flash = Math.max(g.flash, 0.1);
+  if (x != null && y != null) {
+    g.hits.push({ x, y, life: 0.26, max: 0.26 });
+    if (g.hits.length > 12) g.hits.shift();
+  }
 
   if (it.prog < 1) return false; // 还没压回去，只给了个手感
 
@@ -1039,7 +1049,8 @@ function mashInterference(g) {
   g.interferenceIn = rand(...g.interferenceRange);
   g.suppressed += 1;
 
-  g.flash = 0.22;
+  g.flash = 0.45;
+  g.shake = 0.62;
   float(g, '压回去了', '#7fe0d0', 240, 300);
   applyTotals(g);
   checkDeath(g);
@@ -1090,6 +1101,10 @@ function update(g, dtRaw) {
     f.life -= dt;
     f.y -= 26 * dt;
     if (f.life <= 0) g.floats.splice(i, 1);
+  }
+  for (let i = g.hits.length - 1; i >= 0; i--) {
+    g.hits[i].life -= dt;
+    if (g.hits[i].life <= 0) g.hits.splice(i, 1);
   }
 
   if (g.phase !== 'live') return;
@@ -1177,6 +1192,7 @@ function update(g, dtRaw) {
     if (it.prog == null) it.prog = 0; // 调试/测试直接塞进来的对象
     if (it.decay == null) it.decay = rand(...CONFIG.mashDecay);
     if (it.pulse > 0) it.pulse = Math.max(0, it.pulse - dt * 4);
+    if (it.punch > 0) it.punch = Math.max(0, it.punch - dt * 7);
     it.prog = Math.max(0, it.prog - it.decay * dt);
     it.timeLeft -= dt;
     if (it.timeLeft <= 0) {
@@ -1300,6 +1316,7 @@ function draw(g, ctx, ui) {
     drawStage(ctx, g, ui);
     drawControls(ctx, g);
     drawFloats(ctx, g);
+    drawHits(ctx, g);
     if (g.flash > 0) {
       ctx.fillStyle = `rgba(255,90,90,${g.flash * 0.5})`;
       ctx.fillRect(0, 0, W, H);
@@ -1623,8 +1640,9 @@ function drawStage(ctx, g, ui) {
     // 清除进度：只有一条，不显示次数，只让你看见「在涨」和「在掉」
     const barX = boxX + 40;
     const barW = boxW - 80;
-    const barH = 8;
-    const pY = boxY + boxH - 64;
+    const punch = it.punch || 0;
+    const barH = 8 + punch * 4;
+    const pY = boxY + boxH - 64 - punch * 2;
 
     ctx.fillStyle = 'rgba(0,0,0,0.4)';
     rr(ctx, barX, pY, barW, barH, barH / 2);
@@ -1638,22 +1656,33 @@ function drawStage(ctx, g, ui) {
       ctx.clip();
       const g2 = ctx.createLinearGradient(barX, 0, barX + barW, 0);
       g2.addColorStop(0, 'rgba(127,224,208,0.55)');
-      g2.addColorStop(1, 'rgba(200,255,244,0.95)');
+      g2.addColorStop(1, 'rgba(230,255,250,1)');
       ctx.fillStyle = g2;
       ctx.fillRect(barX, pY, fillW, barH);
+      // 打中的那一下，整条泛白
+      if (punch > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${0.55 * punch})`;
+        ctx.fillRect(barX, pY, fillW, barH);
+      }
       ctx.restore();
 
       // 头部亮一下，点的时候更明显
-      ctx.fillStyle = `rgba(235,255,251,${0.35 + 0.6 * pulse})`;
-      rr(ctx, barX + fillW - 4, pY - 1, 4, barH + 2, 2);
+      ctx.fillStyle = `rgba(255,255,255,${0.35 + 0.65 * Math.max(pulse, punch)})`;
+      rr(ctx, barX + fillW - 4 - punch * 2, pY - 2, 4 + punch * 3, barH + 4, 3);
       ctx.fill();
     }
 
+    // 时间快没了：提示变色并抽动，逼你继续点
+    const urgent = it.timeLeft < 1.2;
+    const blink = urgent ? 0.65 + 0.35 * Math.sin(performance.now() / 70) : 1;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,236,231,0.8)';
-    ctx.font = font(11.5, 600);
-    ctx.fillText('连续点击任意处以屏蔽戏中人干扰！', W / 2, boxY + boxH - 30);
+    ctx.fillStyle = urgent
+      ? `rgba(255,236,120,${0.75 * blink})`
+      : 'rgba(255,236,231,0.8)';
+    ctx.font = font(urgent ? 13 : 11.5, 600);
+    const hintY = boxY + boxH - 30 + (urgent ? Math.sin(performance.now() / 55) * 1.2 : 0);
+    ctx.fillText('连续点击任意处以屏蔽戏中人干扰！', W / 2, hintY);
   }
 
   // 交还话筒之后，手还在抖
@@ -2084,6 +2113,32 @@ function drawControls(ctx, g) {
 function hexA(hex, a) {
   const n = parseInt(hex.slice(1), 16);
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+// 点一下就在手指的位置炸一圈：环 + 四道短线
+function drawHits(ctx, g) {
+  for (const h of g.hits) {
+    const k = 1 - h.life / h.max; // 0 -> 1
+    const r = 10 + 30 * k;
+    ctx.save();
+    ctx.globalAlpha = (1 - k) * 0.85;
+    ctx.strokeStyle = '#eafffb';
+    ctx.lineWidth = 3 * (1 - k) + 0.8;
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.lineWidth = 2 * (1 - k) + 0.5;
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + (i * Math.PI) / 2;
+      const r0 = r + 4;
+      const r1 = r + 10 + 8 * k;
+      ctx.beginPath();
+      ctx.moveTo(h.x + Math.cos(a) * r0, h.y + Math.sin(a) * r0);
+      ctx.lineTo(h.x + Math.cos(a) * r1, h.y + Math.sin(a) * r1);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 }
 
 function drawFloats(ctx, g) {
@@ -2547,7 +2602,7 @@ function handleTap(p) {
 
   // live：抢麦期间点哪里都算连点（提示写的是「连续点击任意处」）
   if (g.interference) {
-    mashInterference(g);
+    mashInterference(g, p.x, p.y);
     return;
   }
   if (inRect(p, LAYOUT.suppress)) {
@@ -2613,11 +2668,14 @@ window.addEventListener('keydown', (e) => {
 //  主循环
 // ------------------------------------------------------------
 let last = performance.now();
+let frozen = false; // ?freeze=1：停住时间，只为截图
 function frame(now) {
   const dt = (now - last) / 1000;
   last = now;
-  update(game, dt);
-  tickAmbient(dt);
+  if (!frozen) {
+    update(game, dt);
+    tickAmbient(dt);
+  }
   draw(game, ctx, ui);
   requestAnimationFrame(frame);
 }
@@ -2736,6 +2794,12 @@ if (params.has('mash') && game.interference) {
 }
 if (params.has('prog') && game.interference) {
   game.interference.prog = Math.max(0, Math.min(0.99, Number(params.get('prog') || 0)));
+}
+// ?freeze=1 冻结时间（截图用）；?hit=3 在舞台中央预点 3 下看打击反馈
+if (params.has('freeze')) frozen = true;
+if (params.has('hit') && game.interference) {
+  const n = Number(params.get('hit') || 1);
+  for (let i = 0; i < n; i++) mashInterference(game, 240, 250);
 }
 if (params.has('scene')) {
   game.phase = 'scene';
