@@ -1661,9 +1661,10 @@ function drawStage(ctx, g, ui) {
       ctx.beginPath();
       rr(ctx, barX, pY, fillW, barH, barH / 2);
       ctx.clip();
-      const g2 = ctx.createLinearGradient(barX, 0, barX + barW, 0);
-      g2.addColorStop(0, 'rgba(127,224,208,0.55)');
-      g2.addColorStop(1, 'rgba(230,255,250,1)');
+      const g2 = ctx.createLinearGradient(barX, 0, barX + Math.max(1, fillW), 0);
+      g2.addColorStop(0, 'rgba(127,224,208,0.5)');
+      g2.addColorStop(0.75, 'rgba(180,245,235,0.85)');
+      g2.addColorStop(1, 'rgba(240,255,252,1)');
       ctx.fillStyle = g2;
       ctx.fillRect(barX, pY, fillW, barH);
       // 打中的那一下，整条泛白
@@ -1672,11 +1673,6 @@ function drawStage(ctx, g, ui) {
         ctx.fillRect(barX, pY, fillW, barH);
       }
       ctx.restore();
-
-      // 头部亮一下，点的时候更明显
-      ctx.fillStyle = `rgba(255,255,255,${0.35 + 0.65 * Math.max(pulse, punch)})`;
-      rr(ctx, barX + fillW - 4 - punch * 2, pY - 2, 4 + punch * 3, barH + 4, 3);
-      ctx.fill();
     }
 
     // 时间快没了：提示变色并抽动，逼你继续点
@@ -1689,7 +1685,7 @@ function drawStage(ctx, g, ui) {
       : 'rgba(255,236,231,0.8)';
     ctx.font = font(urgent ? 13 : 11.5, 600);
     const hintY = boxY + boxH - 30 + (urgent ? Math.sin(performance.now() / 55) * 1.2 : 0);
-    ctx.fillText('连续点击任意处以屏蔽戏中人干扰！', W / 2, hintY);
+    ctx.fillText('「连续点击任意处以屏蔽戏中人干扰！」', W / 2, hintY);
   }
 
   // 交还话筒之后，手还在抖
