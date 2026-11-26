@@ -77,11 +77,11 @@ const CONFIG = {
   popupW: 236,              // 弹幕气泡尺寸
   popupH: 66,
   interferenceEvery: [10, 15],
-  interferenceWindow: 3.2,
+  interferenceWindow: 2.5,
   // 「抢麦」的清除进度：点一下涨一截，同时每秒自己往下掉。
   // 两条独立：时间只减不增，进度有涨有落。
-  mashGain: [0.16, 0.26],   // 点一下涨多少（随机）
-  mashDecay: [0.26, 0.34],  // 每秒自己掉多少（每次抢麦随机一个斜率）
+  mashGain: [0.10, 0.18],   // 点一下涨多少（随机）
+  mashDecay: [0.20, 0.26],  // 每秒自己掉多少（每次抢麦随机一个斜率）
   mashShake: 0.34,          // 每点一下的震屏强度
   missPenalty: { attention: 26, mental: 1 },   // 漏接主要扣关注
   wrongPenalty: { attention: 18, mental: 0 },  // 选错也只扣关注
@@ -1631,10 +1631,10 @@ function drawStage(ctx, g, ui) {
     ctx.textBaseline = 'middle';
     ctx.fillText('戏 · 中 · 人', W / 2, boxY + 30);
 
-    // 时间只剩一个不显眼的小数字（不留进度条）
+    // 时间只剩一个不显眼的小数字（不留进度条）；最后 1 秒才亮起来
     ctx.textAlign = 'right';
-    ctx.font = font(11, 500);
-    ctx.fillStyle = 'rgba(255,214,206,0.5)';
+    ctx.font = font(it.timeLeft < 1 ? 12.5 : 11, it.timeLeft < 1 ? 700 : 500);
+    ctx.fillStyle = it.timeLeft < 1 ? 'rgba(255,226,140,0.95)' : 'rgba(255,214,206,0.5)';
     ctx.fillText(`${Math.max(0, it.timeLeft).toFixed(1)}s`, boxX + boxW - 22, boxY + 30);
 
     ctx.fillStyle = '#fff4f1';
@@ -1662,9 +1662,9 @@ function drawStage(ctx, g, ui) {
       rr(ctx, barX, pY, fillW, barH, barH / 2);
       ctx.clip();
       const g2 = ctx.createLinearGradient(barX, 0, barX + Math.max(1, fillW), 0);
-      g2.addColorStop(0, 'rgba(127,224,208,0.5)');
-      g2.addColorStop(0.75, 'rgba(180,245,235,0.85)');
-      g2.addColorStop(1, 'rgba(240,255,252,1)');
+      g2.addColorStop(0, 'rgba(94,214,196,0.8)');
+      g2.addColorStop(0.8, 'rgba(130,238,220,0.95)');
+      g2.addColorStop(1, 'rgba(206,255,248,1)');
       ctx.fillStyle = g2;
       ctx.fillRect(barX, pY, fillW, barH);
       // 打中的那一下，整条泛白
@@ -2788,7 +2788,7 @@ if (params.has('crit') && game.phase === 'live') {
   game.mental = 15;
   game.interference = makeInterference(game, {
     text: '你知道他们在看什么吗？在看你能撑到什么时候。',
-    timeLeft: 2.6, maxTime: 3.2, critical: true,
+    timeLeft: 2.0, maxTime: 2.5, critical: true,
   });
 }
 // ?mash=4 把抢麦的清除进度先点掉 4 下（截图用）；?prog=0.6 直接设进度
